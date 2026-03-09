@@ -9,7 +9,7 @@ class CustomUser(AbstractUser):
         ('agent', 'Agent'),
         ('manager', 'Manager'),
     )
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='requester')
     team = models.ForeignKey(
         'teams.Team',
         on_delete=models.SET_NULL,

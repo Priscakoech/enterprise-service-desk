@@ -41,10 +41,10 @@ INSTALLED_APPS = [
     'accounts',
     'servicedesk',
     'teams',
-    'django',
     'notifications',
     'analytics',
     'rest_framework',
+    'rest_framework.authtoken',
 ]
 
 MIDDLEWARE = [
