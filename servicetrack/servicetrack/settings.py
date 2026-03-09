@@ -43,8 +43,8 @@ INSTALLED_APPS = [
     'teams',
     'django',
     'notifications',
-    'dashboard',
     'analytics',
+    'rest_framework',
 ]
 
 MIDDLEWARE = [
@@ -57,7 +57,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'department.urls'
+ROOT_URLCONF = 'servicetrack.urls'
 
 TEMPLATES = [
     {
@@ -75,7 +75,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'department.wsgi.application'
+WSGI_APPLICATION = 'servicetrack.wsgi.application'
 
 
 # Database

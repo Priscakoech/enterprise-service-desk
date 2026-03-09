@@ -1,6 +1,5 @@
 from django.db import models
 
-# Create your models here.
 #Models for In-app notifications,alerts and email triggers 
 class Notifications(models.Model):
     title = models.CharField(max_length=200)
