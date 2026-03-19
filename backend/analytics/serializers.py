@@ -15,11 +15,16 @@ class TicketStatisticSerializer(serializers.ModelSerializer):
 
 
 class AgentPerformanceSerializer(serializers.ModelSerializer):
-    agent_name = serializers.ReadOnlyField(source='agent.username')
+    agent_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AgentPerformance
         fields = ['id', 'agent', 'agent_name', 'tickets_resolved', 'average_resolution_time']
+
+    def get_agent_name(self, obj):
+        if obj.agent and obj.agent.first_name and obj.agent.last_name:
+            return f"{obj.agent.first_name} {obj.agent.last_name}"
+        return obj.agent.username if obj.agent else None
 
 
 class SLAMetricSerializer(serializers.ModelSerializer):

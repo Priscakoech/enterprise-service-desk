@@ -1,10 +1,5 @@
 from django.contrib import admin
-from .models import Category, SLA, ServiceTicket, TicketResponse, Attachment
-
-
-@admin.register(Category)
-class CategoryAdmin(admin.ModelAdmin):
-    list_display = ['name', 'description']
+from .models import SLA, ServiceTicket, TicketResponse, Attachment
 
 
 @admin.register(SLA)
@@ -14,8 +9,8 @@ class SLAAdmin(admin.ModelAdmin):
 
 @admin.register(ServiceTicket)
 class ServiceTicketAdmin(admin.ModelAdmin):
-    list_display = ['title', 'status', 'priority', 'category', 'requester', 'agent', 'created_at']
-    list_filter = ['status', 'priority', 'category']
+    list_display = ['title', 'status', 'priority', 'team', 'requester', 'agent', 'created_at']
+    list_filter = ['status', 'priority', 'team']
     search_fields = ['title', 'description']
 
 
