@@ -11,6 +11,8 @@ from .views import (
     SLAPolicyListView,
     SLAPolicyDetailView,
     SLAPolicyReorderView,
+    SLAPolicyResetFactoryView,
+    SLAEnsureDefaultView,
     SLATargetListView,
     SLATargetDetailView,
     TicketSLAInstanceListView,
@@ -42,7 +44,9 @@ urlpatterns = [
     # SLA Policies (new engine)
     path('sla-policies/', SLAPolicyListView.as_view(), name='sla-policy-list'),
     path('sla-policies/<int:pk>/', SLAPolicyDetailView.as_view(), name='sla-policy-detail'),
+    path('sla-policies/<int:pk>/reset-factory/', SLAPolicyResetFactoryView.as_view(), name='sla-policy-reset-factory'),
     path('sla-policies/reorder/', SLAPolicyReorderView.as_view(), name='sla-policy-reorder'),
+    path('sla-policies/ensure-default/', SLAEnsureDefaultView.as_view(), name='sla-policy-ensure-default'),
 
     # SLA Targets
     path('sla-policies/<int:policy_id>/targets/', SLATargetListView.as_view(), name='sla-target-list'),

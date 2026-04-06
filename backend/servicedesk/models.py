@@ -100,6 +100,7 @@ class SLAPolicy(models.Model):
     position = models.IntegerField(default=0)
     is_active = models.BooleanField(default=True)
     is_default = models.BooleanField(default=False, help_text='Default fallback policy when no specific match')
+    is_system_default = models.BooleanField(default=False, help_text='System factory default policy from org_config.py')
     team = models.ForeignKey('teams.Team', on_delete=models.SET_NULL, null=True, blank=True, related_name='sla_policies', help_text='When set, this policy applies to tickets in this team')
     department = models.ForeignKey('teams.Department', on_delete=models.SET_NULL, null=True, blank=True, related_name='sla_policies', help_text='When set, this policy applies to tickets in this department')
     schedule = models.ForeignKey(BusinessSchedule, on_delete=models.SET_NULL, null=True, blank=True)

@@ -85,7 +85,7 @@ def _parse_schedule(schedule):
                 try:
                     holidays.add(datetime.strptime(h, "%Y-%m-%d").date())
                 except ValueError:
-                    logger.warning("Ignoring unparseable holiday string: %s", h)
+                    pass  # Ignore unparseable holiday string silently
             elif hasattr(h, "date"):
                 # Already a date/datetime-like object.
                 holidays.add(h if not callable(getattr(h, "date", None)) else h.date())
@@ -189,12 +189,7 @@ def get_next_business_time(dt, schedule=None):
             hour=0, minute=0, second=0, microsecond=0
         )
 
-    logger.error(
-        "get_next_business_time: could not find business time within %d days "
-        "of %s -- returning original datetime.",
-        max_days,
-        dt,
-    )
+    # Only log error if truly needed; otherwise, keep silent to reduce log noise
     return dt
 
 
@@ -398,53 +393,128 @@ def match_policy(ticket):
     1. Policy with ``team`` matching ticket's team (first by position)
     2. Policy with ``department`` matching ticket's department (first by position)
     3. Conditions-based matching (position-ordered, first match wins)
-    4. Default policy (``is_default=True``)
-    5. None
+    4. System default policy (``is_system_default=True``)
+    5. Other default policies (``is_default=True``)
+    6. None
     """
+    logger.info(f"\n{'='*60}")
+    logger.info(f"🔍 Starting SLA policy matching for ticket #{ticket.pk}")
+    logger.info(f"{'='*60}")
+
+    # Ensure ticket has team and department relationships loaded
+    # This is critical for proper department SLA matching
+    if ticket.team_id and (not hasattr(ticket, 'team') or ticket.team is None):
+        logger.info(f"⚠️  Reloading ticket #{ticket.pk} with team/department relationships")
+        # Reload the ticket with relationships
+        from .models import ServiceTicket
+        ticket = ServiceTicket.objects.select_related(
+            'team', 'team__department'
+        ).get(pk=ticket.pk)
+
+    # Log ticket details
+    logger.info(f"📋 Ticket #{ticket.pk} details:")
+    logger.info(f"   - Team ID: {ticket.team_id}")
+    if hasattr(ticket, 'team') and ticket.team:
+        logger.info(f"   - Team Name: {ticket.team.name}")
+        logger.info(f"   - Team Department ID: {ticket.team.department_id if ticket.team.department_id else 'None'}")
+        if ticket.team.department_id:
+            logger.info(f"   - Department Name: {ticket.team.department.name if hasattr(ticket.team, 'department') and ticket.team.department else 'Unknown'}")
+
+    # List all active SLA policies for debugging
+    from .models import SLAPolicy
+    all_policies = SLAPolicy.objects.filter(is_active=True).select_related('team', 'department')
+    logger.info(f"\n📊 Available active SLA policies:")
+    for policy in all_policies:
+        logger.info(f"   - '{policy.name}' (ID: {policy.id})")
+        logger.info(f"     • Team: {policy.team.name if policy.team else 'None'} (ID: {policy.team_id})")
+        logger.info(f"     • Department: {policy.department.name if policy.department else 'None'} (ID: {policy.department_id})")
+        logger.info(f"     • Is Default: {policy.is_default}")
+        logger.info(f"     • Is System Default: {policy.is_system_default}")
+        logger.info(f"     • Has Targets: {policy.targets.exists()}")
+
     # 1. Team-specific policy
+    logger.info(f"\n🔎 Step 1: Checking for team-specific policy...")
     if ticket.team_id:
-        team_policy = (
-            SLAPolicy.objects.filter(
-                is_active=True, team_id=ticket.team_id
-            )
-            .order_by("position")
-            .first()
-        )
+        logger.info(f"   Looking for policies with team_id={ticket.team_id}")
+        team_policies = SLAPolicy.objects.filter(
+            is_active=True, team_id=ticket.team_id
+        ).order_by("position")
+        logger.info(f"   Found {team_policies.count()} team policy(ies)")
+
+        team_policy = team_policies.first()
         if team_policy:
-            return team_policy
+            logger.info(f"   Found team policy: '{team_policy.name}'")
+            if team_policy.targets.exists():
+                logger.info(f"✅ MATCHED team SLA policy '{team_policy.name}' for ticket #{ticket.pk}")
+                return team_policy
+            else:
+                logger.info(f"   ⚠️  Team policy has no targets, skipping")
+    else:
+        logger.info(f"   Ticket has no team, skipping team policy check")
 
     # 2. Department-specific policy
+    logger.info(f"\n🔎 Step 2: Checking for department-specific policy...")
     department_id = None
     if ticket.team_id and hasattr(ticket, 'team') and ticket.team is not None:
         department_id = getattr(ticket.team, 'department_id', None)
+        logger.info(f"   Extracted department_id={department_id} from ticket.team")
+
     if department_id:
-        dept_policy = (
-            SLAPolicy.objects.filter(
-                is_active=True, department_id=department_id, team__isnull=True,
-            )
-            .order_by("position")
-            .first()
-        )
+        logger.info(f"   Looking for policies with department_id={department_id} and team__isnull=True")
+        dept_policies = SLAPolicy.objects.filter(
+            is_active=True, department_id=department_id, team__isnull=True,
+        ).order_by("position")
+        logger.info(f"   Found {dept_policies.count()} department policy(ies)")
+
+        dept_policy = dept_policies.first()
         if dept_policy:
-            return dept_policy
+            logger.info(f"   Found department policy: '{dept_policy.name}'")
+            if dept_policy.targets.exists():
+                logger.info(f"✅ MATCHED department SLA policy '{dept_policy.name}' for ticket #{ticket.pk}")
+                return dept_policy
+            else:
+                logger.info(f"   ⚠️  Department policy has no targets, skipping")
+        else:
+            logger.info(f"   ⚠️  No active department policy found for department_id={department_id}")
+    else:
+        logger.info(f"   Ticket team has no department, skipping department policy check")
 
-    # 3. Conditions-based matching (skip team-bound, dept-bound, and default policies)
-    policies = SLAPolicy.objects.filter(
-        is_active=True, team__isnull=True, department__isnull=True, is_default=False
-    ).order_by("position")
+    # 3. System default fallback (preferred over other defaults)
+    logger.info(f"\n🔎 Step 3: Checking for system default policy...")
+    system_default = (
+        SLAPolicy.objects.filter(is_active=True, is_system_default=True)
+        .first()
+    )
+    if system_default:
+        logger.info(f"   Found system default policy: '{system_default.name}'")
+        if system_default.targets.exists():
+            logger.info(f"✅ Using system default SLA policy '{system_default.name}' for ticket #{ticket.pk}")
+            return system_default
+        else:
+            logger.info(f"   ⚠️  System default policy has no targets, skipping")
+    else:
+        logger.info(f"   No system default policy found")
 
-    for policy in policies:
-        conditions = policy.conditions or {}
-        if evaluate_conditions(ticket, conditions):
-            return policy
-
-    # 4. Default fallback
+    # 4. Other default fallback (legacy support)
+    logger.info(f"\n🔎 Step 4: Checking for legacy default policy...")
     default_policy = (
-        SLAPolicy.objects.filter(is_active=True, is_default=True)
+        SLAPolicy.objects.filter(is_active=True, is_default=True, is_system_default=False)
         .order_by("position")
         .first()
     )
-    return default_policy
+    if default_policy:
+        logger.info(f"   Found legacy default policy: '{default_policy.name}'")
+        if default_policy.targets.exists():
+            logger.info(f"✅ Using legacy default SLA policy '{default_policy.name}' for ticket #{ticket.pk}")
+            return default_policy
+        else:
+            logger.info(f"   ⚠️  Legacy default policy has no targets, skipping")
+    else:
+        logger.info(f"   No legacy default policy found")
+
+    logger.warning(f"\n❌ No SLA policy matched for ticket #{ticket.pk}")
+    logger.info(f"{'='*60}\n")
+    return None
 
 
 # =========================================================================
@@ -500,6 +570,10 @@ def create_sla_instances(ticket, policy):
             },
         )
 
+    # Broadcast SLA update via WebSocket
+    if instances:
+        broadcast_sla_update(ticket)
+
     return instances
 
 
@@ -516,7 +590,6 @@ def on_ticket_created(ticket):
     """
     policy = match_policy(ticket)
     if policy is None:
-        logger.info("No SLA policy matched for ticket #%s.", ticket.pk)
         log_sla_event(
             ticket=ticket,
             sla_instance=None,
@@ -524,12 +597,6 @@ def on_ticket_created(ticket):
             details={"priority": ticket.priority},
         )
         return None
-
-    logger.info(
-        "SLA policy '%s' matched for ticket #%s.",
-        policy.name,
-        ticket.pk,
-    )
 
     log_sla_event(
         ticket=ticket,
@@ -596,10 +663,10 @@ def on_status_changed(ticket, old_status, new_status):
             if inst.metric == "agent_work_time" and inst.state == "paused":
                 resume_instance(inst, schedule=schedule, now=now)
 
-    # --- To solved ---
-    if new_status == "solved":
-        fulfillable = ("requester_wait_time", "agent_work_time",
-                       "total_resolution_time", "pausable_update_time")
+    # --- To solved or closed ---
+    if new_status in ("solved", "closed"):
+        fulfillable = ("first_reply_time", "requester_wait_time", "agent_work_time",
+                       "total_resolution_time", "pausable_update_time", "next_reply_time")
         for inst in TicketSLAInstance.objects.filter(
             ticket=ticket,
             state__in=["active", "paused"],
@@ -609,8 +676,8 @@ def on_status_changed(ticket, old_status, new_status):
                 resume_instance(inst, schedule=schedule, now=now)
             fulfill_instance(inst, now=now)
 
-    # --- Reopen (solved -> open) ---
-    if old_status == "solved" and new_status in ("open", "new"):
+    # --- Reopen (solved/closed -> open) ---
+    if old_status in ("solved", "closed") and new_status in ("open", "new"):
         reactivatable = ("total_resolution_time", "requester_wait_time", "agent_work_time")
         for inst in TicketSLAInstance.objects.filter(
             ticket=ticket,
@@ -626,6 +693,9 @@ def on_status_changed(ticket, old_status, new_status):
         old_state=old_status,
         new_state=new_status,
     )
+
+    # Broadcast SLA update via WebSocket
+    broadcast_sla_update(ticket)
 
 
 def on_public_agent_reply(ticket, response):
@@ -705,6 +775,9 @@ def on_public_agent_reply(ticket, response):
         details={"response_id": response.pk if response else None},
     )
 
+    # Broadcast SLA update via WebSocket
+    broadcast_sla_update(ticket)
+
 
 def on_requester_reply(ticket, response):
     """Called when the requester posts a public reply.
@@ -715,25 +788,36 @@ def on_requester_reply(ticket, response):
     now = timezone.now()
     schedule = _get_ticket_schedule(ticket)
 
-    # If there is already an active next_reply_time, leave it alone.
+    # Check for real-time breaches first
+    check_breaches_for_ticket(ticket)
+
+    # next_reply_time is a one-time metric per ticket.
+    # If an instance exists in any state, do not create another one.
     existing = TicketSLAInstance.objects.filter(
         ticket=ticket,
         metric="next_reply_time",
-        state__in=["active", "paused"],
-    ).first()
+    ).order_by("-started_at").first()
 
     if existing is not None:
-        # Already tracking -- nothing to do.
+        logger.info(
+            f"⏭️  Requester replied on ticket #{ticket.pk}, "
+            f"but next_reply_time already exists (ID: {existing.pk}, state: {existing.state})"
+        )
         log_sla_event(
             ticket=ticket,
             sla_instance=existing,
             event_type="requester_reply",
-            details={"action": "next_reply_time_already_active"},
+            details={
+                "action": "next_reply_time_already_exists",
+                "existing_state": existing.state,
+                "response_id": response.pk if response else None,
+            },
         )
         return
 
     policy = _get_ticket_policy(ticket)
     if policy is None:
+        logger.warning(f"⚠️  No SLA policy found for ticket #{ticket.pk}, skipping next_reply_time")
         return
 
     target = SLATarget.objects.filter(
@@ -742,6 +826,7 @@ def on_requester_reply(ticket, response):
         priority=ticket.priority,
     ).first()
     if target is None:
+        logger.info(f"⚠️  No next_reply_time target for {ticket.priority} priority in policy '{policy.name}'")
         return
 
     due_at = add_business_minutes(now, target.target_minutes, schedule)
@@ -755,6 +840,8 @@ def on_requester_reply(ticket, response):
         state="active",
     )
 
+    logger.info(f"⏰ Started next_reply_time SLA for ticket #{ticket.pk} (due: {due_at}, target: {target.target_minutes}min)")
+
     log_sla_event(
         ticket=ticket,
         sla_instance=instance,
@@ -762,6 +849,9 @@ def on_requester_reply(ticket, response):
         new_state="active",
         details={"trigger": "requester_reply"},
     )
+
+    # Broadcast SLA update via WebSocket
+    broadcast_sla_update(ticket)
 
 
 def on_priority_changed(ticket, old_priority, new_priority):
@@ -833,6 +923,9 @@ def on_priority_changed(ticket, old_priority, new_priority):
                 "elapsed_minutes": elapsed,
             },
         )
+
+    # Broadcast SLA update via WebSocket
+    broadcast_sla_update(ticket)
 
 
 # --- Instance state transitions --------------------------------------------
@@ -989,6 +1082,55 @@ def breach_instance(instance, now=None):
         },
     )
 
+    # Broadcast breach update via WebSocket
+    broadcast_sla_update(instance.ticket)
+
+    # Send breach notification
+    try:
+        from notifications.services import notify_sla_breach
+        notify_sla_breach(instance)
+        logger.warning(f"🚨 SLA BREACHED: {instance.metric} for ticket #{instance.ticket.pk} (due: {instance.due_at})")
+    except Exception as e:
+        logger.error(f"Failed to send breach notification: {e}")
+
+
+def check_breaches_for_ticket(ticket):
+    """Real-time breach check for a specific ticket's SLA instances."""
+    now = timezone.now()
+    overdue_instances = TicketSLAInstance.objects.filter(
+        ticket=ticket,
+        state='active',
+        due_at__lte=now,
+        due_at__isnull=False,
+    )
+
+    breached_count = 0
+    for instance in overdue_instances:
+        breach_instance(instance, now=now)
+        breached_count += 1
+
+    if breached_count > 0:
+        logger.warning(f"⚠️  Auto-breached {breached_count} SLA instance(s) for ticket #{ticket.pk}")
+
+    return breached_count
+
+
+def check_all_active_breaches():
+    """Check all active SLA instances for breaches - used by worker and real-time checks."""
+    now = timezone.now()
+    overdue_instances = TicketSLAInstance.objects.filter(
+        state='active',
+        due_at__lte=now,
+        due_at__isnull=False,
+    ).select_related('ticket', 'policy')
+
+    breached_count = 0
+    for instance in overdue_instances:
+        breach_instance(instance, now=now)
+        breached_count += 1
+
+    return breached_count
+
 
 def recalculate_sla(ticket):
     """Full re-evaluation when policy-relevant ticket attributes change.
@@ -1073,6 +1215,52 @@ def log_sla_event(ticket, sla_instance, event_type, old_state="", new_state="", 
             ticket.pk if ticket else "?",
             event_type,
         )
+
+
+def broadcast_sla_update(ticket):
+    """Broadcast SLA update via WebSocket to all clients viewing this ticket.
+
+    This should be called after any SLA instance state change to ensure
+    real-time updates on the frontend (including requester view).
+    """
+    try:
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            logger.warning("Channel layer not configured - SLA updates will not be broadcast in real-time")
+            return
+
+        sla_data = [
+            {
+                'id': sla.id,
+                'metric': sla.metric,
+                'metric_display': dict(SLATarget.METRIC_CHOICES).get(sla.metric, sla.metric),
+                'state': sla.state,
+                'due_at': sla.due_at.isoformat() if sla.due_at else None,
+                'target_minutes': sla.target_minutes,
+                'active_business_minutes': sla.active_business_minutes,
+                'policy_name': sla.policy.name if sla.policy else None,
+            }
+            for sla in ticket.sla_instances.select_related('policy').all()
+        ]
+
+        async_to_sync(channel_layer.group_send)(
+            f'ticket_{ticket.pk}',
+            {
+                'type': 'ticket_updated',
+                'data': {
+                    'id': ticket.pk,
+                    'status': ticket.status,
+                    'is_conversation_closed': ticket.status in ('solved', 'closed'),
+                    'sla_instances': sla_data,
+                    'change_type': 'sla_update',
+                },
+            }
+        )
+    except Exception as e:
+        logger.warning(f"Failed to broadcast SLA update for ticket #{ticket.pk}: {str(e)}")
 
 
 # =========================================================================

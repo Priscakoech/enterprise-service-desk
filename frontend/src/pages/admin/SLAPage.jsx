@@ -199,6 +199,7 @@ export default function SLAPage() {
 
       // Create new targets for every non-empty value
       const targetPromises = [];
+      const targetErrors = [];
       for (const priority of PRIORITIES) {
         for (const metric of METRICS) {
           const val = form.targets[priority.key]?.[metric.key];
@@ -210,19 +211,34 @@ export default function SLAPage() {
                   priority: priority.key,
                   metric: metric.key,
                   target_minutes: minutes,
-                }).catch(() => {})
+                }).catch((err) => {
+                  console.error(`Failed to create target ${metric.key}/${priority.key}:`, err);
+                  console.error('Error response:', err.response?.data);
+                  targetErrors.push(`${metric.key}/${priority.key}: ${err.response?.data?.detail || err.message}`);
+                })
               );
             }
           }
         }
       }
+
       await Promise.all(targetPromises);
+
+      // Show errors if any targets failed
+      if (targetErrors.length > 0) {
+        console.error('Target creation errors:', targetErrors);
+        alert(`Some targets failed to save:\n${targetErrors.join('\n')}`);
+      } else {
+        console.log('✅ All targets created successfully');
+      }
 
       resetForm();
       fetchPolicies();
       fetchDashboard();
-    } catch {
-      // Error handled silently
+    } catch (err) {
+      console.error('Error saving SLA policy:', err);
+      console.error('Error response:', err.response?.data);
+      alert(`Error saving SLA policy: ${err.response?.data?.detail || err.message}`);
     } finally {
       setSaving(false);
     }
@@ -301,6 +317,7 @@ export default function SLAPage() {
   // --- Sorting ---
 
   const sortedPolicies = [...policies].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  const activePoliciesCount = policies.filter((p) => p?.is_active).length;
 
   // --- Render ---
 
@@ -347,14 +364,20 @@ export default function SLAPage() {
           />
           <DashboardCard
             icon={<AlertTriangle className="w-5 h-5 text-red-600 dark:text-red-400" />}
-            label="Breached"
-            value={dashboard.breached_count ?? dashboard.breached ?? 0}
+            label="Breached Tickets"
+            value={
+              dashboard.breached_ticket_count
+              ?? dashboard.breached_count
+              ?? dashboard.tickets_with_issues
+              ?? dashboard.breached
+              ?? 0
+            }
             bgClass="bg-red-50 dark:bg-red-500/10"
           />
           <DashboardCard
             icon={<Clock className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
-            label="Active Instances"
-            value={dashboard.active_count ?? dashboard.active ?? 0}
+            label="Active SLA Policies"
+            value={dashboard.active_policy_count ?? dashboard.active_count ?? activePoliciesCount}
             bgClass="bg-amber-50 dark:bg-amber-500/10"
           />
         </div>

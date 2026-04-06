@@ -95,6 +95,31 @@ export default function TicketDetail() {
   const isClosed = ticket?.status === 'solved' || ticket?.status === 'closed';
   const hasAgent = ticket?.agent !== null && ticket?.agent !== undefined;
 
+  const slaInstances = Array.isArray(ticket?.sla_instances) ? ticket.sla_instances : [];
+  const latestSlaByMetric = slaInstances.reduce((acc, sla) => {
+    if (!sla?.metric) return acc;
+    const existing = acc[sla.metric];
+    if (!existing) {
+      acc[sla.metric] = sla;
+      return acc;
+    }
+
+    const existingTs = new Date(existing.started_at || existing.last_event_at || 0).getTime();
+    const incomingTs = new Date(sla.started_at || sla.last_event_at || 0).getTime();
+    if (incomingTs > existingTs || (incomingTs === existingTs && (sla.id || 0) > (existing.id || 0))) {
+      acc[sla.metric] = sla;
+    }
+    return acc;
+  }, {});
+
+  const slaStateOrder = { active: 0, paused: 1, breached: 2, fulfilled: 3 };
+  const visibleSlaInstances = Object.values(latestSlaByMetric).sort((a, b) => {
+    const aOrder = slaStateOrder[a.state] ?? 99;
+    const bOrder = slaStateOrder[b.state] ?? 99;
+    if (aOrder !== bOrder) return aOrder - bOrder;
+    return (a.metric || '').localeCompare(b.metric || '');
+  });
+
   const canSendMessage =
     hasAgent &&
     !isClosed &&
@@ -103,14 +128,19 @@ export default function TicketDetail() {
       role === 'admin' ||
       role === 'manager');
 
+  const chatContainerRef = useRef(null);
+
   useEffect(() => {
     fetchTicket();
     if (canAssign) fetchAgents();
   }, [id]);
 
   useEffect(() => {
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    // Scroll to bottom whenever responses change
+    if (chatContainerRef.current) {
+      setTimeout(() => {
+        chatContainerRef.current?.scrollTo({ top: chatContainerRef.current.scrollHeight, behavior: 'smooth' });
+      }, 0);
     }
   }, [ticket?.responses]);
 
@@ -283,7 +313,7 @@ export default function TicketDetail() {
             ) : (
               <>
                 {/* Chat messages area */}
-                <div className="px-6 py-4 space-y-4 max-h-[28rem] overflow-y-auto">
+                <div ref={chatContainerRef} className="px-6 py-4 space-y-4 max-h-[28rem] overflow-y-auto">
                   {(!ticket.responses || ticket.responses.length === 0) ? (
                     <div className="flex flex-col items-center justify-center py-12">
                       <MessageCircle className="w-10 h-10 text-slate-300 dark:text-slate-600 mb-3" />
@@ -610,21 +640,21 @@ export default function TicketDetail() {
           </div>
 
           {/* SLA Status */}
-          {ticket.sla_instances && ticket.sla_instances.length > 0 && (
+          {slaInstances.length > 0 && (
             <div className="bg-white dark:bg-[#0f1729] rounded-xl border border-slate-200 dark:border-slate-800 p-6 space-y-4">
               <div>
                 <h2 className="text-sm font-semibold text-slate-900 dark:text-white">SLA Status</h2>
-                {ticket.sla_instances[0]?.policy_name && (
+                {slaInstances[0]?.policy_name && (
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Policy: {ticket.sla_instances[0].policy_name}
-                    {ticket.sla_instances[0]?.schedule_name && (
-                      <span className="ml-2 text-slate-400">({ticket.sla_instances[0].schedule_name})</span>
+                    Policy: {slaInstances[0].policy_name}
+                    {slaInstances[0]?.schedule_name && (
+                      <span className="ml-2 text-slate-400">({slaInstances[0].schedule_name})</span>
                     )}
                   </p>
                 )}
               </div>
               <div className="space-y-3">
-                {ticket.sla_instances.map((sla) => {
+                {visibleSlaInstances.length > 0 ? visibleSlaInstances.map((sla) => {
                   const stateConfig = {
                     active: { color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10', bar: 'bg-blue-500' },
                     paused: { color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10', bar: 'bg-amber-500' },
@@ -703,7 +733,9 @@ export default function TicketDetail() {
                       )}
                     </div>
                   );
-                })}
+                }) : (
+                  <p className="text-xs text-slate-400 dark:text-slate-500">No SLA metrics available for this ticket.</p>
+                )}
               </div>
 
               {/* SLA Audit Timeline (staff only) */}

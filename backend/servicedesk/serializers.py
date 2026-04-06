@@ -40,6 +40,12 @@ class BusinessScheduleSerializer(serializers.ModelSerializer):
 class SLATargetSerializer(serializers.ModelSerializer):
     metric_display = serializers.CharField(source='get_metric_display', read_only=True)
     priority_display = serializers.CharField(source='get_priority_display', read_only=True)
+    # Make policy optional in input - it will be set by the view from URL
+    policy = serializers.PrimaryKeyRelatedField(
+        queryset=SLAPolicy.objects.all(),
+        required=False,
+        allow_null=True
+    )
 
     class Meta:
         model = SLATarget
@@ -54,9 +60,10 @@ class SLAPolicySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SLAPolicy
-        fields = ['id', 'name', 'description', 'position', 'is_active', 'is_default',
+        fields = ['id', 'name', 'description', 'position', 'is_active', 'is_default', 'is_system_default',
                   'team', 'team_name', 'department', 'department_name',
                   'schedule', 'schedule_name', 'conditions', 'targets', 'created_at', 'updated_at']
+        read_only_fields = ['is_system_default']
 
     def get_targets(self, obj):
         targets = obj.targets.all()
