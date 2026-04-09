@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { StatusBadge, PriorityBadge } from '../shared/Badges';
-import { ArrowLeft, Send, User, Clock, Edit3, Trash2, Lock, MessageCircle, Paperclip, Image, FileText, Download } from 'lucide-react';
+import { ArrowLeft, Send, User, Clock, Edit3, Trash2, Lock, MessageCircle, Paperclip, Image, FileText, Download, Info } from 'lucide-react';
 import api from '../../api/client';
 import useWebSocket from '../../hooks/useWebSocket';
 
@@ -30,6 +30,8 @@ export default function TicketDetail() {
   const [editForm, setEditForm] = useState({});
   const [agents, setAgents] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
+  // System messages received via WebSocket (status changes, etc)
+  const [systemMessages, setSystemMessages] = useState([]);
 
   const fetchTicket = useCallback(async () => {
     try {
@@ -73,9 +75,65 @@ export default function TicketDetail() {
     return () => clearInterval(interval);
   }, [id]);
 
-  // WebSocket (bonus for ASGI deployments)
+  // WebSocket handler — processes structured events
   const handleWsMessage = useCallback((data) => {
-    if (data.type === 'chat_message' || data.type === 'ticket_updated') {
+    if (data.type === 'chat_message') {
+      // Refresh to get the server-persisted message
+      fetchTicket();
+    } else if (data.type === 'ticket_updated') {
+      // Update ticket state directly from the event payload
+      setTicket((prev) => {
+        if (!prev) return prev;
+        const d = data.data || {};
+        return {
+          ...prev,
+          status: d.status || prev.status,
+          priority: d.priority || prev.priority,
+          description: d.description ?? prev.description,
+          agent: d.agent ?? prev.agent,
+          updated_at: d.updated_at || prev.updated_at,
+          sla_instances: d.sla_instances || prev.sla_instances,
+        };
+      });
+      setEditForm((prev) => ({
+        ...prev,
+        status: data.data?.status || prev.status,
+        priority: data.data?.priority || prev.priority,
+        agent: data.data?.agent || prev.agent,
+      }));
+    } else if (data.type === 'ticket_closed') {
+      // Ticket was closed — update status and show system message
+      setTicket((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status: data.new_status || 'closed',
+        };
+      });
+      setSystemMessages((prev) => [
+        ...prev,
+        {
+          id: `sys_${Date.now()}`,
+          type: 'system',
+          event: 'TICKET_CLOSED',
+          message: `This conversation has been closed${data.closed_by ? ` by ${data.closed_by}` : ''}`,
+          timestamp: data.timestamp || new Date().toISOString(),
+        },
+      ]);
+    } else if (data.type === 'system_message') {
+      // System messages (status changes, priority changes)
+      setSystemMessages((prev) => [
+        ...prev,
+        {
+          id: `sys_${Date.now()}_${Math.random()}`,
+          type: 'system',
+          event: data.event || '',
+          message: data.message || '',
+          timestamp: data.timestamp || new Date().toISOString(),
+        },
+      ]);
+    } else if (data.type === 'sla_update') {
+      // SLA changes — refresh ticket to get updated SLA data
       fetchTicket();
     }
   }, [fetchTicket]);
@@ -136,13 +194,13 @@ export default function TicketDetail() {
   }, [id]);
 
   useEffect(() => {
-    // Scroll to bottom whenever responses change
+    // Scroll to bottom whenever responses or system messages change
     if (chatContainerRef.current) {
       setTimeout(() => {
         chatContainerRef.current?.scrollTo({ top: chatContainerRef.current.scrollHeight, behavior: 'smooth' });
       }, 0);
     }
-  }, [ticket?.responses]);
+  }, [ticket?.responses, systemMessages]);
 
   const fetchAgents = async () => {
     try {
@@ -202,8 +260,8 @@ export default function TicketDetail() {
       setSelectedFile(null);
       fetchTicket();
     } catch (err) {
-      const msg = err.response?.data?.file?.[0] || 'Failed to upload file';
-      alert(msg);
+      const msg = err.response?.data?.file?.[0] || err.response?.data?.file || 'Failed to upload file';
+      alert(typeof msg === 'object' ? JSON.stringify(msg) : msg);
     }
     setSending(false);
   };
@@ -222,6 +280,34 @@ export default function TicketDetail() {
     if (diffDays < 7) return `${diffDays}d ago`;
     return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   };
+
+  // Merge server responses + WS system messages into a single timeline
+  const buildChatTimeline = () => {
+    const items = [];
+
+    // Server-saved responses
+    (ticket?.responses || []).forEach((r) => {
+      items.push({
+        ...r,
+        timelineType: 'message',
+        sortTime: new Date(r.created_at).getTime(),
+      });
+    });
+
+    // System messages from WebSocket
+    systemMessages.forEach((sm) => {
+      items.push({
+        ...sm,
+        timelineType: 'system',
+        sortTime: new Date(sm.timestamp).getTime(),
+      });
+    });
+
+    items.sort((a, b) => a.sortTime - b.sortTime);
+    return items;
+  };
+
+  const chatTimeline = ticket ? buildChatTimeline() : [];
 
   if (loading) {
     return (
@@ -314,7 +400,7 @@ export default function TicketDetail() {
               <>
                 {/* Chat messages area */}
                 <div ref={chatContainerRef} className="px-6 py-4 space-y-4 max-h-[28rem] overflow-y-auto">
-                  {(!ticket.responses || ticket.responses.length === 0) ? (
+                  {chatTimeline.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-12">
                       <MessageCircle className="w-10 h-10 text-slate-300 dark:text-slate-600 mb-3" />
                       <p className="text-sm text-slate-400 dark:text-slate-500">
@@ -322,7 +408,26 @@ export default function TicketDetail() {
                       </p>
                     </div>
                   ) : (
-                    (ticket.responses || []).map((r) => {
+                    chatTimeline.map((item) => {
+                      // System messages (status changes, ticket closed, etc)
+                      if (item.timelineType === 'system') {
+                        return (
+                          <div key={item.id} className="flex justify-center my-2">
+                            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                              <Info className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
+                              <span className="text-xs text-slate-500 dark:text-slate-400">
+                                {item.message}
+                              </span>
+                              <span className="text-[10px] text-slate-400 dark:text-slate-600">
+                                {formatTimestamp(item.timestamp)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      // Regular chat messages
+                      const r = item;
                       const isCurrentUser = Number(r.responder) === Number(user?.id);
                       const roleBadgeStyle =
                         ROLE_BADGE_STYLES[r.responder_role] || ROLE_BADGE_STYLES.requester;
@@ -411,19 +516,46 @@ export default function TicketDetail() {
                   <div className="border-t border-slate-200 dark:border-slate-800 px-6 py-3">
                     <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2">Attachments</p>
                     <div className="flex flex-wrap gap-2">
-                      {ticket.attachments.map((att) => (
-                        <a
-                          key={att.id}
-                          href={att.file}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors text-sm text-slate-600 dark:text-slate-300"
-                        >
-                          {att.file_type === 'image' ? <Image className="w-4 h-4 text-blue-500" /> : <FileText className="w-4 h-4 text-amber-500" />}
-                          <span className="truncate max-w-[150px]">{att.original_filename || 'Attachment'}</span>
-                          <Download className="w-3 h-3 text-slate-400" />
-                        </a>
-                      ))}
+                      {ticket.attachments.map((att) => {
+                        const url = att.file_url || att.file;
+                        const isImage = att.file_type === 'image';
+
+                        return (
+                          <div key={att.id} className="group">
+                            {isImage && url ? (
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+                              >
+                                <img
+                                  src={url}
+                                  alt={att.original_filename || 'Attachment'}
+                                  className="w-32 h-24 object-cover"
+                                  loading="lazy"
+                                />
+                                <div className="px-2 py-1 bg-slate-50 dark:bg-slate-800/50">
+                                  <span className="text-[10px] text-slate-500 dark:text-slate-400 truncate block max-w-[120px]">
+                                    {att.original_filename || 'Image'}
+                                  </span>
+                                </div>
+                              </a>
+                            ) : (
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors text-sm text-slate-600 dark:text-slate-300"
+                              >
+                                <FileText className="w-4 h-4 text-amber-500" />
+                                <span className="truncate max-w-[150px]">{att.original_filename || 'Attachment'}</span>
+                                <Download className="w-3 h-3 text-slate-400" />
+                              </a>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

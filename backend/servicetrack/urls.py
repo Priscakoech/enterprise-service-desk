@@ -6,8 +6,6 @@ The `urlpatterns` list routes URLs to views. For more information please see:
 """
 from django.contrib import admin
 from django.urls import include, path
-from django.conf import settings
-from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -18,7 +16,3 @@ urlpatterns = [
     path('api/analytics/', include('analytics.urls')),
 ]
 
-# Media files — served by Django in dev. In prod with Railway, media is
-# ephemeral (see README for notes). WhiteNoise handles static files.
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -11,7 +11,7 @@ class CustomUser(AbstractUser):
         ('manager', 'Manager'),
     )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='requester')
-    profile_picture = models.ImageField(upload_to='profile_pics/', null=True, blank=True)
+    profile_picture_url = models.URLField(max_length=500, blank=True, default='', help_text='Cloudinary URL for profile picture')
     team = models.ForeignKey(
         'teams.Team',
         on_delete=models.SET_NULL,

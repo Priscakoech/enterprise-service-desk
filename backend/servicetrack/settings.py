@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from decouple import config, Csv
 import dj_database_url
+import cloudinary
 
 
 def _csv_env(name, default=''):
@@ -204,9 +205,14 @@ CHANNEL_LAYERS = {
     },
 }
 
-# Media files
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+# Cloudinary — all user-uploaded media (attachments, profile pictures)
+# WhiteNoise continues to serve Django admin/static files.
+cloudinary.config(
+    cloud_name=config('CLOUDINARY_CLOUD_NAME', default=''),
+    api_key=config('CLOUDINARY_API_KEY', default=''),
+    api_secret=config('CLOUDINARY_API_SECRET', default=''),
+    secure=True,
+)
 
 # Logging configuration
 LOGGING = {

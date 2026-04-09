@@ -21,4 +21,5 @@ class TicketResponseAdmin(admin.ModelAdmin):
 
 @admin.register(Attachment)
 class AttachmentAdmin(admin.ModelAdmin):
-    list_display = ['ticket', 'uploaded_at']
+    list_display = ['ticket', 'original_filename', 'file_type', 'uploaded_at']
+    readonly_fields = ['file_url']

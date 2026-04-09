@@ -2,12 +2,6 @@ from rest_framework import serializers
 from .models import CustomUser, SignupSecret
 
 
-def _get_profile_picture_url(user):
-    if user.profile_picture:
-        return user.profile_picture.url
-    return None
-
-
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
     signup_code = serializers.CharField(write_only=True, required=False, allow_blank=True)
@@ -44,7 +38,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile_picture', 'role', 'team', 'team_name', 'department', 'department_name', 'is_blacklisted', 'account_status', 'must_change_password']
 
     def get_profile_picture(self, obj):
-        return _get_profile_picture_url(obj)
+        return obj.profile_picture_url or None
 
     def update(self, instance, validated_data):
         old_team_id = instance.team_id
@@ -84,4 +78,4 @@ class ProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'role', 'team_name', 'department_name']
 
     def get_profile_picture(self, obj):
-        return _get_profile_picture_url(obj)
+        return obj.profile_picture_url or None

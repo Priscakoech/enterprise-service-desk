@@ -149,6 +149,11 @@ enterprise-service-desk/
    ```env
    SECRET_KEY=your-secret-key-here-make-it-long-and-random
    DEBUG=True
+
+   # Cloudinary for media uploads
+   CLOUDINARY_CLOUD_NAME=your_cloud_name
+   CLOUDINARY_API_KEY=your_api_key
+   CLOUDINARY_API_SECRET=your_api_secret
    ```
 
    > With `DEBUG=True` and no `DATABASE_URL`, the app automatically uses SQLite for local development — no database setup needed.
@@ -228,7 +233,11 @@ git push -u origin main
 3. **Configure the service:**
    - Click on the service → **Settings** tab
    - **Root Directory**: leave as `/` (project root)
-   - Railway will auto-detect the `Procfile`
+   - Under **Deploy**, set:
+     - **Build Command**: `cd backend && python manage.py migrate --noinput && python manage.py seed_admin && python manage.py collectstatic --noinput`
+     - **Start Command**: `cd backend && gunicorn servicetrack.asgi:application -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT`
+
+   > ⚠️ These must be separate fields. `$PORT` is only available at runtime (Start), not during Build.
 
 4. **Set environment variables** (go to **Variables** tab):
 
@@ -236,7 +245,7 @@ git push -u origin main
    |---|---|
    | `SECRET_KEY` | A long random string (use `python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"`) |
    | `DEBUG` | `False` |
-   | `DATABASE_URL` | Click **"Add Reference"** → select your Postgres service → `DATABASE_URL` |
+   | `DATABASE_URL` | Click **"Add Reference"** → select your Postgres service → **`DATABASE_PUBLIC_URL`** (name it `DATABASE_URL` on your side) |
    | `ALLOWED_HOSTS` | Your backend domain, e.g. `your-backend.up.railway.app` |
    | `CORS_ALLOWED_ORIGINS` | `https://your-frontend.up.railway.app` |
    | `CSRF_TRUSTED_ORIGINS` | `https://your-frontend.up.railway.app` |
@@ -244,6 +253,9 @@ git push -u origin main
    | `ADMIN_USERNAME` | Your admin username (default: `admin`) |
    | `ADMIN_PASSWORD` | **Set a strong password!** (default: `admin`) |
    | `ADMIN_EMAIL` | Admin email (default: `admin@servicedesk.local`) |
+   | `CLOUDINARY_CLOUD_NAME` | Your Cloudinary Cloud Name |
+   | `CLOUDINARY_API_KEY` | Your Cloudinary API Key |
+   | `CLOUDINARY_API_SECRET` | Your Cloudinary API Secret |
 
    > 💡 Railway auto-provides `RAILWAY_PUBLIC_DOMAIN` which the settings.py already picks up for `ALLOWED_HOSTS`. But setting it explicitly is safer.
 
@@ -252,11 +264,9 @@ git push -u origin main
    - You'll get something like `your-backend-xxxx.up.railway.app`
    - Use this domain in the CORS/ALLOWED_HOSTS vars above
 
-6. **Deploy** — Railway will auto-deploy. On every deploy, the `Procfile` automatically:
-   - Runs database migrations
-   - Seeds the admin user (idempotent — won't create duplicates)
-   - Collects static files
-   - Starts Gunicorn + Uvicorn
+6. **Deploy** — Railway will auto-deploy. On every deploy:
+   - **Build phase**: runs migrations, seeds admin (idempotent), collects static files
+   - **Start phase**: launches Gunicorn + Uvicorn ASGI server
 
 ### Step 5 — Deploy the Frontend
 
@@ -325,6 +335,9 @@ Railway auto-deploys on every push to `main`. Migrations and admin seeding run a
 | `ADMIN_USERNAME` | Admin username for auto-seeding (default: `admin`) | No |
 | `ADMIN_PASSWORD` | Admin password for auto-seeding — **set a real one in prod!** | No |
 | `ADMIN_EMAIL` | Admin email for auto-seeding (default: `admin@servicedesk.local`) | No |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name for media uploads | **Yes** |
+| `CLOUDINARY_API_KEY` | Cloudinary API key | **Yes** |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret | **Yes** |
 
 ### Frontend (set in Railway dashboard)
 
@@ -551,12 +564,12 @@ Configure custom SLA policies from the admin sidebar under **SLA Policies**.
 
 ## Production Notes
 
-### Media Files
+### Media Files (Cloudinary)
 
-Railway's filesystem is **ephemeral** — files uploaded during runtime are lost on each deploy. For production media (user avatars, ticket attachments), consider:
-- **AWS S3** + `django-storages`
-- **Cloudinary**
-- **Railway Volume** (persistent disk)
+Railway's filesystem is **ephemeral** — files uploaded during runtime are lost on each deploy. 
+To solve this, the application is natively integrated with **Cloudinary**. All ticket attachments, documents (rendered as `raw` files), and user profile pictures are uploaded directly to your Cloudinary account. The backend only persists the `secure_url` returned by Cloudinary in its PostgreSQL database.
+
+Ensure your `CLOUDINARY_*` environment variables are correctly populated in the Railway instance.
 
 ### WebSockets
 

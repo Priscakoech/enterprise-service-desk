@@ -40,6 +40,8 @@ class TicketChatConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+    # ── Event handlers (called via channel_layer.group_send) ──
+
     async def chat_message(self, event):
         """Send chat message to WebSocket client."""
         await self.send(text_data=json.dumps({
@@ -52,8 +54,38 @@ class TicketChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def ticket_updated(self, event):
-        """Notify clients that the ticket was updated."""
+        """Notify clients that the ticket was updated (status, priority, etc)."""
         await self.send(text_data=json.dumps({
             'type': 'ticket_updated',
+            'event': event.get('event', 'TICKET_UPDATED'),
             'data': event.get('data', {}),
+        }))
+
+    async def ticket_closed(self, event):
+        """Notify clients that the ticket was closed."""
+        await self.send(text_data=json.dumps({
+            'type': 'ticket_closed',
+            'event': 'TICKET_CLOSED',
+            'ticket_id': event.get('ticket_id'),
+            'closed_by': event.get('closed_by'),
+            'new_status': event.get('new_status'),
+            'timestamp': event.get('timestamp'),
+        }))
+
+    async def system_message(self, event):
+        """System-generated messages shown in the chat (status changes, etc)."""
+        await self.send(text_data=json.dumps({
+            'type': 'system_message',
+            'event': event.get('event', ''),
+            'message': event.get('message', ''),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
+        }))
+
+    async def sla_update(self, event):
+        """SLA state changes (breach, fulfilled, etc)."""
+        await self.send(text_data=json.dumps({
+            'type': 'sla_update',
+            'event': event.get('event', 'SLA_UPDATED'),
+            'data': event.get('data', {}),
+            'timestamp': event.get('timestamp', timezone.now().isoformat()),
         }))

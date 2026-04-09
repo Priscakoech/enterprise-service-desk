@@ -12,7 +12,8 @@ class SLASerializer(serializers.ModelSerializer):
 class AttachmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attachment
-        fields = ['id', 'file', 'response', 'file_type', 'original_filename', 'uploaded_at']
+        fields = ['id', 'file_url', 'response', 'file_type', 'original_filename', 'uploaded_at']
+        read_only_fields = ['file_url']
 
 
 class TicketResponseSerializer(serializers.ModelSerializer):

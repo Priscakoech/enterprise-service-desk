@@ -47,7 +47,7 @@ class TicketResponse(models.Model):
 class Attachment(models.Model):
     ticket = models.ForeignKey(ServiceTicket, on_delete=models.CASCADE, related_name='attachments')
     response = models.ForeignKey('TicketResponse', on_delete=models.SET_NULL, null=True, blank=True, related_name='attachments')
-    file = models.FileField(upload_to='attachments/')
+    file_url = models.URLField(max_length=500, help_text='Cloudinary secure URL')
     file_type = models.CharField(max_length=20, blank=True)
     original_filename = models.CharField(max_length=255, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)

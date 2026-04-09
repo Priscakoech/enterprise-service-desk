@@ -193,13 +193,42 @@ class ServiceTicketDetailView(generics.RetrieveUpdateDestroyAPIView):
         try:
             from channels.layers import get_channel_layer
             from asgiref.sync import async_to_sync
-            from .serializers import ServiceTicketSerializer
             channel_layer = get_channel_layer()
             if channel_layer:
+                group = f'ticket_{ticket.id}'
+                now_iso = timezone.now().isoformat()
+
+                # Determine what changed
+                status_changed = ticket.status != old_status
+                priority_changed = ticket.priority != old_priority
+                is_closing = status_changed and ticket.status in ('solved', 'closed')
+
+                # Build SLA snapshot for the payload
+                sla_snapshot = [
+                    {
+                        'id': sla.id,
+                        'metric': sla.metric,
+                        'state': sla.state,
+                        'due_at': sla.due_at.isoformat() if sla.due_at else None,
+                        'target_minutes': sla.target_minutes,
+                    }
+                    for sla in ticket.sla_instances.all()
+                ]
+
+                change_type = 'status' if status_changed else (
+                    'priority' if priority_changed else (
+                        'description' if ticket.description != old_description else 'general'
+                    )
+                )
+
+                # 1. Always send the general ticket_updated event
                 async_to_sync(channel_layer.group_send)(
-                    f'ticket_{ticket.id}',
+                    group,
                     {
                         'type': 'ticket_updated',
+                        'event': 'STATUS_CHANGED' if status_changed else (
+                            'PRIORITY_CHANGED' if priority_changed else 'TICKET_UPDATED'
+                        ),
                         'data': {
                             'id': ticket.id,
                             'status': ticket.status,
@@ -208,24 +237,47 @@ class ServiceTicketDetailView(generics.RetrieveUpdateDestroyAPIView):
                             'agent': ticket.agent_id,
                             'updated_at': ticket.updated_at.isoformat() if ticket.updated_at else None,
                             'is_conversation_closed': ticket.status in ('solved', 'closed'),
-                            'sla_instances': [
-                                {
-                                    'id': sla.id,
-                                    'metric': sla.metric,
-                                    'state': sla.state,
-                                    'due_at': sla.due_at.isoformat() if sla.due_at else None,
-                                    'target_minutes': sla.target_minutes,
-                                }
-                                for sla in ticket.sla_instances.all()
-                            ],
-                            'change_type': 'status' if ticket.status != old_status else (
-                                'priority' if ticket.priority != old_priority else (
-                                    'description' if ticket.description != old_description else 'general'
-                                )
-                            ),
+                            'sla_instances': sla_snapshot,
+                            'change_type': change_type,
                         },
                     }
                 )
+
+                # 2. If the ticket was just closed, send a dedicated close event
+                if is_closing:
+                    async_to_sync(channel_layer.group_send)(
+                        group,
+                        {
+                            'type': 'ticket_closed',
+                            'ticket_id': ticket.id,
+                            'closed_by': self.request.user.username,
+                            'new_status': ticket.status,
+                            'timestamp': now_iso,
+                        }
+                    )
+
+                # 3. Send system messages for status/priority changes (appear in chat)
+                if status_changed:
+                    async_to_sync(channel_layer.group_send)(
+                        group,
+                        {
+                            'type': 'system_message',
+                            'event': 'STATUS_CHANGED',
+                            'message': f'Status changed from {old_status} to {ticket.status}',
+                            'timestamp': now_iso,
+                        }
+                    )
+
+                if priority_changed:
+                    async_to_sync(channel_layer.group_send)(
+                        group,
+                        {
+                            'type': 'system_message',
+                            'event': 'PRIORITY_CHANGED',
+                            'message': f'Priority changed from {old_priority} to {ticket.priority}',
+                            'timestamp': now_iso,
+                        }
+                    )
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
@@ -319,24 +371,31 @@ class AttachmentListView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         ticket_id = self.kwargs.get('ticket_id')
         uploaded_file = self.request.FILES.get('file')
-        file_type = ''
-        original_filename = ''
 
-        if uploaded_file:
-            original_filename = uploaded_file.name
-            ext = original_filename.rsplit('.', 1)[-1].lower() if '.' in original_filename else ''
-            image_exts = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'}
-            doc_exts = {'pdf', 'doc', 'docx', 'xls', 'xlsx', 'txt', 'csv', 'ppt', 'pptx'}
+        if not uploaded_file:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'file': 'No file was uploaded.'})
 
-            if ext in image_exts:
-                file_type = 'image'
-            elif ext in doc_exts:
-                file_type = 'document'
-            else:
-                from rest_framework.exceptions import ValidationError
-                raise ValidationError({'file': f'File type .{ext} is not allowed. Only images and documents are accepted.'})
+        # Validate and upload to Cloudinary
+        try:
+            from .cloudinary_utils import validate_file, upload_to_cloudinary
+            ext, file_type = validate_file(uploaded_file)
+            file_url = upload_to_cloudinary(uploaded_file, folder='servicedesk/attachments')
+        except ValueError as e:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'file': str(e)})
+        except RuntimeError as e:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'file': str(e)})
 
-        serializer.save(ticket_id=ticket_id, file_type=file_type, original_filename=original_filename)
+        original_filename = uploaded_file.name
+
+        serializer.save(
+            ticket_id=ticket_id,
+            file_url=file_url,
+            file_type=file_type,
+            original_filename=original_filename,
+        )
 
 
 class AttachmentDetailView(generics.RetrieveDestroyAPIView):
@@ -781,7 +840,7 @@ class SLAAnalyticsDashboardView(APIView):
                 'name': f"{agent.first_name} {agent.last_name}".strip() or agent.username,
                 'email': agent.email,
                 'department': agent.department.name if agent.department else '',
-                'profile_picture': agent.profile_picture.url if agent.profile_picture else None,
+                'profile_picture': agent.profile_picture_url or None,
                 'total_tickets': total,
                 'resolved_tickets': resolved,
                 'resolution_rate': round(resolved / total * 100, 1) if total > 0 else 0,
@@ -863,7 +922,7 @@ class SLAAnalyticsDashboardView(APIView):
                     'name': f"{agent.first_name} {agent.last_name}".strip() or agent.username,
                     'email': agent.email,
                     'department': agent.department.name if agent.department else '',
-                    'profile_picture': agent.profile_picture.url if agent.profile_picture else None,
+                    'profile_picture': agent.profile_picture_url or None,
                 }
 
         active_agent_details = []

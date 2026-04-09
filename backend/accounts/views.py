@@ -149,10 +149,15 @@ class ProfileView(APIView):
 
     def patch(self, request):
         user = request.user
-        # Handle profile picture upload separately since it's a SerializerMethodField
+        # Handle profile picture upload via Cloudinary
         if 'profile_picture' in request.FILES:
-            user.profile_picture = request.FILES['profile_picture']
-            user.save(update_fields=['profile_picture'])
+            try:
+                from servicedesk.cloudinary_utils import upload_profile_picture
+                url = upload_profile_picture(request.FILES['profile_picture'])
+                user.profile_picture_url = url
+                user.save(update_fields=['profile_picture_url'])
+            except (ValueError, RuntimeError) as e:
+                return Response({'error': str(e)}, status=400)
         serializer = ProfileSerializer(user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
